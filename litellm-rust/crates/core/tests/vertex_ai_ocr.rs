@@ -1,6 +1,7 @@
 use serde_json::{Value, json};
 
 use super::test_support::{MockResponse, mock_server, perform_ocr, wire_request};
+use crate::auth::InputSource;
 
 fn request_body(request: &str) -> Value {
     serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap()
@@ -75,6 +76,23 @@ async fn invalid_credentials_fail_before_provider_http() {
     );
     let error = perform_ocr(request).await.unwrap_err();
     assert!(error.to_string().contains("vertex_credentials"));
+}
+
+#[tokio::test]
+async fn request_controlled_api_base_is_rejected_before_vertex_auth() {
+    let mut request = wire_request(
+        "vertex_ai/mistral-ocr-maas",
+        "https://caller.example",
+        json!({"vertex_project":"project-1"}),
+    );
+    request.connection.api_base_source = InputSource::Request;
+
+    let error = perform_ocr(request).await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("request-controlled Vertex AI endpoint")
+    );
 }
 
 #[tokio::test]
