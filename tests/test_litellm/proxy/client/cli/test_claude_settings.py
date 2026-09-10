@@ -1,7 +1,9 @@
 import json
 import os
+import pathlib
 import shlex
 import stat
+import sys
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -30,11 +32,14 @@ from litellm.proxy.client.cli.commands.claude_settings import (
     UnpinModel,
     claude_settings_path,
     configure_claude_settings,
+    install_statusline_script,
     configure_state_path,
     lite_api_key_helper_configured,
     merge_claude_settings,
+    statusline_command,
     resolve_api_key_helper,
     unconfigure_claude_settings,
+    with_status_line,
 )
 
 
@@ -667,6 +672,7 @@ UNDO_SCENARIOS = {
                 "env.ENABLE_TOOL_SEARCH",
                 "env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",
                 "apiKeyHelper",
+                "statusLine",
             },
             "kept": (),
         },
@@ -955,3 +961,96 @@ class TestConfigureAndUnconfigure:
 def _lookup(settings, path):
     section, _, key = path.rpartition(".")
     return (settings.get(section) or {}).get(key) if section else settings.get(key)
+
+
+class TestStatusLine:
+    """Every configure registers the status line, and only while the slot is empty or already ours."""
+
+    COMMAND = "/opt/lite/bin/python /Users/me/.litellm/statusline.py"
+
+    def test_an_empty_slot_gets_our_status_line(self):
+        assert with_status_line({}, self.COMMAND)["statusLine"] == {"type": "command", "command": self.COMMAND}
+
+    def test_a_users_own_status_line_is_never_replaced(self):
+        theirs = {"type": "command", "command": "~/.claude/my-statusline.sh"}
+        assert with_status_line({"statusLine": theirs}, self.COMMAND)["statusLine"] == theirs
+
+    def test_ours_under_an_older_interpreter_is_refreshed(self):
+        stale = {"type": "command", "command": "/old/python /Users/me/.litellm/statusline.py"}
+        assert with_status_line({"statusLine": stale}, self.COMMAND)["statusLine"]["command"] == self.COMMAND
+
+    def test_both_credential_shapes_carry_it(self):
+        for credential in (StaticToken("tok"), ApiKeyHelper("helper")):
+            merged = merge_claude_settings({}, PROXY, credential, status_line=self.COMMAND)
+            assert merged["statusLine"] == {"type": "command", "command": self.COMMAND}
+
+    def test_the_installed_script_is_the_bundled_one_and_the_command_runs_this_interpreter(self, tmp_path):
+        from litellm.proxy.client.cli.commands import statusline_script
+
+        script = tmp_path / "lite" / "statusline.py"
+        command = install_statusline_script(script)
+        assert script.read_bytes() == pathlib.Path(statusline_script.__file__).read_bytes()
+        assert shlex.split(command) == [sys.executable, str(script)]
+        assert command == statusline_command(script)
+        assert stat.S_IMODE(script.stat().st_mode) == 0o600
+        assert stat.S_IMODE(script.parent.stat().st_mode) == 0o700
+        assert install_statusline_script(script) == command
+
+    def test_a_reinstall_replaces_the_script_in_one_step_and_a_refused_one_leaves_the_old_script_whole(self, tmp_path):
+        # Claude Code may be running the script at the moment `lite` reinstalls it; the file it has open
+        # must stay complete, and a reinstall that cannot land must not leave a truncated script behind.
+        from litellm.proxy.client.cli.commands import statusline_script
+
+        script = tmp_path / "lite" / "statusline.py"
+        install_statusline_script(script)
+        bundled = pathlib.Path(statusline_script.__file__).read_bytes()
+        with script.open("rb") as running:
+            install_statusline_script(script)
+            assert running.read() == bundled
+        assert [child.name for child in script.parent.iterdir()] == ["statusline.py"]
+
+        if os.geteuid() != 0:
+            script.parent.chmod(0o500)
+            try:
+                with pytest.raises(ClaudeSettingsError, match="Could not install the status line script"):
+                    install_statusline_script(script)
+            finally:
+                script.parent.chmod(0o700)
+            assert script.read_bytes() == bundled
+
+    def test_configure_installs_it_and_unconfigure_removes_only_ours(self, tmp_path):
+        rig = _Rig(tmp_path, {"theme": "dark"})
+        script = tmp_path / "statusline.py"
+        rig.configure(script_path=script)
+        assert rig.read()["statusLine"]["command"] == statusline_command(script)
+        assert script.exists()
+
+        outcome = rig.unconfigure()
+        assert rig.read() == {"theme": "dark"}
+        assert "statusLine" in outcome.restored
+
+    def test_a_status_line_the_user_replaced_after_configure_survives_unconfigure(self, tmp_path):
+        rig = _Rig(tmp_path, None)
+        rig.configure(model=KeepModel(), script_path=tmp_path / "statusline.py")
+        theirs = {"type": "command", "command": "~/.claude/my-statusline.sh"}
+        rig.edit(lambda settings: {**settings, "statusLine": theirs})
+
+        outcome = rig.unconfigure()
+        assert rig.read()["statusLine"] == theirs
+        assert "statusLine" in outcome.kept
+
+    def test_a_receipt_from_before_the_status_line_existed_still_unconfigures(self, tmp_path):
+        # Older receipts never claimed statusLine; a key no configure wrote is never ours, so it stays.
+        rig = _Rig(tmp_path, None)
+        script = tmp_path / "statusline.py"
+        rig.configure(model=KeepModel(), script_path=script)
+        receipt = json.loads(rig.state.read_text())
+        receipt["written"].pop("statusLine")
+        receipt["previous"].pop("statusLine")
+        rig.state.write_text(json.dumps(receipt))
+
+        outcome = rig.unconfigure()
+        restored = rig.read()
+        assert "ANTHROPIC_AUTH_TOKEN" not in restored.get("env", {})
+        assert restored["statusLine"]["command"] == statusline_command(script)
+        assert "statusLine" not in outcome.restored
