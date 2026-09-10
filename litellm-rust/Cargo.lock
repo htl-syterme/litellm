@@ -1473,7 +1473,6 @@ dependencies = [
  "litellm-python-interop",
  "pyo3",
  "pyo3-async-runtimes",
- "reqwest",
  "serde",
  "serde_json",
  "tokio",
