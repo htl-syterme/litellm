@@ -249,6 +249,12 @@ def plan_pgbouncer(
     return PgBouncerPlan(ini=ini, userlist=userlist, pooled_url=pooled_url, ca_source=params.get("sslcert") or None)
 
 
+def pooled_database_url(upstream_url: str, settings: PgBouncerSettings) -> str | PgBouncerError:
+    """The loopback URL of a PgBouncer another container in the pod already runs for ``upstream_url``."""
+    plan: Final = plan_pgbouncer(upstream_url, settings, runtime_dir=Path("/nonexistent"), run_as_user=None)
+    return plan if isinstance(plan, PgBouncerError) else plan.pooled_url
+
+
 def write_pgbouncer_files(plan: PgBouncerPlan, runtime_dir: Path, run_as_user: str | None) -> Path | PgBouncerError:
     """Write the ini, userlist (both hold the password, so mode 0600) and CA copy, and return the ini path.
 
