@@ -9334,11 +9334,9 @@ class ProviderConfigManager:
                 ReductoParseV3Config,
             )
 
-            if model == "parse-v3":
-                return ReductoParseV3Config()
             if model == "parse-legacy":
                 return ReductoParseLegacyConfig()
-            return None
+            return ReductoParseV3Config()
 
         MistralOCRConfig: Final = litellm_utils.MistralOCRConfig
         PROVIDER_TO_CONFIG_MAP: Final = {
