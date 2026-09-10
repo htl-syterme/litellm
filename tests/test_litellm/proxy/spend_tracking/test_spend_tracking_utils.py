@@ -19,9 +19,8 @@ from litellm.constants import (
     SESSION_ID_OMITTED_METADATA_KEY,
 )
 from litellm.litellm_core_utils.safe_json_dumps import safe_dumps
-from litellm.proxy._types import UserAPIKeyAuth
+from litellm.proxy._types import SpendLogsPayload, UserAPIKeyAuth
 from litellm.proxy.litellm_pre_call_utils import LiteLLMProxyRequestSetup
-from litellm.proxy._types import SpendLogsPayload
 from litellm.proxy.spend_tracking.spend_tracking_utils import (
     _get_messages_for_spend_logs_payload,
     _get_proxy_server_request_for_spend_logs_payload,
